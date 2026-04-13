@@ -34,7 +34,18 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: List Gradle projects
+        run: ./gradlew projects
+
       - name: Build MangaTR debug APK
+        run: ./gradlew :src:tr:mangatr:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mangatr-debug
+          path: src/tr/mangatr/build/outputs/apk/debug/*.apk
+          retention-days: 7      - name: Build MangaTR debug APK
         run: ./gradlew :src-tr-mangatr:assembleDebug
 
       - name: Upload APK
