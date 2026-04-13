@@ -34,8 +34,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: List Gradle projects
-        run: ./gradlew projects
+      - name: Fix formatting
+        run: ./gradlew spotlessApply
 
       - name: Build MangaTR debug APK
         run: ./gradlew :src:tr:mangatr:assembleDebug
