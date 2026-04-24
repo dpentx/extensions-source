@@ -122,7 +122,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
             .addQueryParameter("page", page.toString())
             .addQueryParameter("listType", "pagination")
 
-        // PHP keeps the last `tur` in the query string; `tur` is shared with genre + special-type filters.
         val genreFilter = filters.firstInstanceOrNull<FMReader.GenreList>()
         val includedGenres = genreFilter?.state?.filter { it.isIncluded() }.orEmpty()
         val specialTur = filters.firstInstanceOrNull<SpecialTypeFilter>()?.let { f ->
@@ -177,7 +176,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         title = element.text()
     }
 
-    /** Detail page appends (YYYY) to the title; strip it to match list browse titles. */
     private val trailingYearInTitle = Regex("""\s*\((?:19|20)\d{2}\)\s*$""")
 
     override fun getMangaUrl(manga: SManga): String = captchaUrl?.also { captchaUrl = null } ?: super.getMangaUrl(manga)
@@ -241,8 +239,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         }
     }
 
-    // Chapters — API HTML: `cek/fetch_pages_manga.php` returns `article.chapter-card` (not `div.chapter-item`).
-
     override fun chapterListSelector() = "article.chapter-card"
 
     private val chapterListHeaders by lazy {
@@ -299,10 +295,10 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
     override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
 
     override fun imageRequest(page: Page): Request = GET(
-    page.imageUrl!!,
-    headersBuilder()
-        .add("Referer", "$baseUrl/")
-        .build(),
+        page.imageUrl!!,
+        headersBuilder()
+            .add("Referer", "$baseUrl/")
+            .build(),
     )
 
     // Pages
@@ -332,22 +328,29 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
 
                 if (urls.isEmpty()) continue
 
-                // chapter.js: part index -> vertical canvas order (matches site reader).
                 val mapping = decodePartOrderMapping(orderAttr)
                 if (mapping == null || mapping.isEmpty()) {
                     pages.add(Page(pages.size, imageUrl = urls.first()))
                     continue
                 }
 
+                // Mapping'de olan index'leri sıralı ekle, olmayanları sona ekle
+                val mappedIndices = mapping.map { it.first }.toSet()
                 val sortedUrls = mapping
                     .sortedBy { it.second }
                     .mapNotNull { (partIdx, _) -> urls.getOrNull(partIdx) }
-                if (sortedUrls.isEmpty()) {
+                val unmappedUrls = urls.indices
+                    .filterNot { it in mappedIndices }
+                    .mapNotNull { urls.getOrNull(it) }
+
+                val allUrls = sortedUrls + unmappedUrls
+
+                if (allUrls.isEmpty()) {
                     pages.add(Page(pages.size, imageUrl = urls.first()))
                     continue
                 }
 
-                for (url in sortedUrls) {
+                for (url in allUrls) {
                     pages.add(Page(pages.size, imageUrl = url))
                 }
             }
@@ -415,7 +418,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         }
     }
 
-    /** Genres from `select[name=tur]` on the list page (cached after first parse). */
     private fun cacheGenresFromListPage(document: Document) {
         if (cachedGenres.isNotEmpty()) return
         val parsed = document.select("select[name=tur] option[value]").mapNotNull { opt ->
@@ -438,7 +440,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
             }
             .map { popularMangaFromElement(it) }
 
-        // Last page: "›" still points at the same page number (compare to current).
         val currentPage = response.request.url.queryParameter("page")?.toIntOrNull() ?: 1
         val nextPageFromArrow = document.select(popularMangaNextPageSelector())
             .firstOrNull { it.text().trim() == "›" }
