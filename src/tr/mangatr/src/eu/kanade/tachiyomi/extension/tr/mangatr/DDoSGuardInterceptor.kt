@@ -17,8 +17,8 @@ class DDoSGuardInterceptor(private val client: OkHttpClient) : Interceptor {
         val originalRequest = chain.request()
         val response = chain.proceed(originalRequest)
 
-        // Check if DDos-GUARD is on
-        if (response.code !in ERROR_CODES || response.header("Server") !in SERVER_CHECK) {
+        // Check if we got a 403 (server header check removed — site may not send ddos-guard header)
+        if (response.code !in ERROR_CODES) {
             return response
         }
 
@@ -63,6 +63,5 @@ class DDoSGuardInterceptor(private val client: OkHttpClient) : Interceptor {
     companion object {
         private const val WELL_KNOWN_URL = "https://check.ddos-guard.net/check.js"
         private val ERROR_CODES = listOf(403)
-        private val SERVER_CHECK = listOf("ddos-guard")
     }
 }
