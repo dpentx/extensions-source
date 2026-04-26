@@ -291,7 +291,12 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
 
     override fun getChapterUrl(chapter: SChapter): String = "$baseUrl/${chapter.url}"
 
-    override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
+    override fun pageListRequest(chapter: SChapter): Request = GET(
+        getChapterUrl(chapter),
+        headersBuilder()
+            .add("Referer", "$baseUrl/")
+            .build(),
+    )
 
     override fun imageRequest(page: Page): Request = GET(
         page.imageUrl!!,
