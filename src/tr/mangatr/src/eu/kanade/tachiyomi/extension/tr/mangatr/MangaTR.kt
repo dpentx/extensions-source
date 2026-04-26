@@ -275,14 +275,13 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
     }
 
     override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
-        val link = element.selectFirst("a.chapter-card__title")!!
+        val link = element.selectFirst("a.chapter-card__row")!!
         setUrlWithoutDomain(link.attr("href"))
-        val chapterNum = link.selectFirst("span:last-child")?.text()?.trim()
+        val chapterNum = link.selectFirst("div.chapter-number")?.text()?.trim()
             ?: link.text().trim()
         val sub = element.selectFirst("p.chapter-card__subtitle")?.text()?.trim()
         name = when {
             sub.isNullOrEmpty() -> chapterNum
-            sub.contains("Bölüm") -> sub
             else -> "$chapterNum: $sub"
         }
         date_upload = parseRelativeDate(
