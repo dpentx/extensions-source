@@ -66,9 +66,8 @@ abstract class JuraTempest : KeiSource() {
     // The site's search box calls an internal API this extension doesn't reverse-engineer
     // yet, and the browse/catalog page is still under construction, so plain-text search
     // isn't available for now.
-    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
-        return MangasPage(emptyList(), false)
-    }
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage =
+        MangasPage(emptyList(), false)
 
     override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
         val segments = url.pathSegments
