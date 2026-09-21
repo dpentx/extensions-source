@@ -149,8 +149,10 @@ abstract class JuraTempest : KeiSource() {
     companion object {
         // Matches one chapter record from the embedded hydration payload, e.g.:
         // slug:"38-5",number:38.5,title:"Bölüm 38.5",isSpecial:!0,createdAt:$R[91]=new Date("2026-08-19T15:11:32.402Z")
+        // The "$R[91]=" part is a minifier-assigned registry reference whose name/index
+        // can change between site deploys, so it's matched loosely rather than pinned.
         private val chapterEntryRegex = Regex(
-            """slug:"([^"]+)",number:([0-9.]+),title:"((?:[^"\\]|\\.)*)",isSpecial:(!0|!1),createdAt:${'$'}R\[\d+]=new Date\("([^"]+)"\)""",
+            """slug:"([^"]+)",number:([0-9.]+),title:"((?:[^"\\]|\\.)*)",isSpecial:(!0|!1),createdAt:(?:${'$'}\w+\[\d+]=)?new Date\("([^"]+)"\)""",
         )
     }
 }
