@@ -10,11 +10,9 @@ import keiyoushi.annotation.Source
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
 import keiyoushi.utils.asJsoup
-import keiyoushi.utils.tryParseDate
 import okhttp3.HttpUrl
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
+import org.jsoup.Jsoup
+import java.time.Instant
 
 @Source
 abstract class JuraTempest : KeiSource() {
@@ -86,13 +84,20 @@ abstract class JuraTempest : KeiSource() {
 
     // Details & Chapters
     // Both live on the same manga page, so they're always fetched and parsed together.
+    //
+    // The chapter list rendered in the DOM is paginated client-side (10 rows per page)
+    // with no addressable URL, so it can't be scraped directly for series with more than
+    // one page. Instead, the full chapter list is read from the React hydration payload
+    // that TanStack Start embeds in a <script> tag at the end of the page - it always
+    // contains every chapter, regardless of what the visible page shows.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
         fetchDetails: Boolean,
         fetchChapters: Boolean,
     ): SMangaUpdate {
-        val document = client.get(baseUrl + manga.url).asJsoup()
+        val html = client.get(baseUrl + manga.url).body.string()
+        val document = Jsoup.parse(html, baseUrl + manga.url)
 
         val updatedManga = SManga.create().apply {
             url = manga.url
@@ -107,15 +112,16 @@ abstract class JuraTempest : KeiSource() {
                 ?: SManga.UNKNOWN
         }
 
-        val chapterList = document.select("a[data-slot=chapter-row]").map { element ->
+        val chapterList = chapterEntryRegex.findAll(html).map { match ->
+            val (slug, number, title, isSpecial, createdAt) = match.destructured
             SChapter.create().apply {
-                setUrlWithoutDomain(element.absUrl("href"))
-                name = element.selectFirst("span.truncate.font-medium")!!.text()
-                chapter_number = chapterNumberRegex.find(name)?.value?.toFloatOrNull() ?: -1f
-                date_upload = element.selectFirst("span.text-muted-foreground.text-xs")?.text()
-                    ?.let { dateFormat.tryParseDate(it, istanbulZone) } ?: 0L
+                url = "${manga.url}/$slug"
+                name = title.replace("\\\"", "\"").replace("\\\\", "\\")
+                chapter_number = number.toFloatOrNull() ?: -1f
+                date_upload = runCatching { Instant.parse(createdAt).toEpochMilli() }.getOrDefault(0L)
+                scanlator = if (isSpecial == "!0") "Özel" else null
             }
-        }
+        }.toList()
 
         return SMangaUpdate(updatedManga, chapterList)
     }
@@ -141,8 +147,10 @@ abstract class JuraTempest : KeiSource() {
     }
 
     companion object {
-        private val chapterNumberRegex = """\d+(\.\d+)?""".toRegex()
-        private val istanbulZone = ZoneId.of("Europe/Istanbul")
-        private val dateFormat = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.forLanguageTag("tr"))
+        // Matches one chapter record from the embedded hydration payload, e.g.:
+        // slug:"38-5",number:38.5,title:"Bölüm 38.5",isSpecial:!0,createdAt:$R[91]=new Date("2026-08-19T15:11:32.402Z")
+        private val chapterEntryRegex = Regex(
+            """slug:"([^"]+)",number:([0-9.]+),title:"((?:[^"\\]|\\.)*)",isSpecial:(!0|!1),createdAt:${'$'}R\[\d+]=new Date\("([^"]+)"\)""",
+        )
     }
 }
