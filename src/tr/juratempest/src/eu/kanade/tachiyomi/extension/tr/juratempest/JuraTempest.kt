@@ -86,10 +86,12 @@ abstract class JuraTempest : KeiSource() {
     // Both live on the same manga page, so they're always fetched and parsed together.
     //
     // The chapter list rendered in the DOM is paginated client-side (10 rows per page)
-    // with no addressable URL, so it can't be scraped directly for series with more than
-    // one page. Instead, the full chapter list is read from the React hydration payload
-    // that TanStack Start embeds in a <script> tag at the end of the page - it always
-    // contains every chapter, regardless of what the visible page shows.
+    // with no addressable URL, so the full list is instead read from the React hydration
+    // payload TanStack Start embeds in a <script> tag - when present, it always contains
+    // every chapter. That payload isn't reliably present on every request (observed
+    // missing on-device while present when fetched from a browser, likely served
+    // conditionally), so this falls back to the paginated DOM rows (last 10 chapters)
+    // whenever the hydration payload can't be found, rather than reporting no chapters.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
@@ -112,7 +114,7 @@ abstract class JuraTempest : KeiSource() {
                 ?: SManga.UNKNOWN
         }
 
-        val chapterList = chapterEntryRegex.findAll(html).map { match ->
+        val hydratedChapters = chapterEntryRegex.findAll(html).map { match ->
             val (slug, number, title, isSpecial, createdAt) = match.destructured
             SChapter.create().apply {
                 url = "${manga.url}/$slug"
@@ -122,6 +124,15 @@ abstract class JuraTempest : KeiSource() {
                 scanlator = if (isSpecial == "!0") "Özel" else null
             }
         }.toList()
+
+        val chapterList = hydratedChapters.ifEmpty {
+            document.select("a[data-slot=chapter-row]").map { element ->
+                SChapter.create().apply {
+                    setUrlWithoutDomain(element.absUrl("href"))
+                    name = element.selectFirst("span.truncate.font-medium")!!.text()
+                }
+            }
+        }
 
         return SMangaUpdate(updatedManga, chapterList)
     }
