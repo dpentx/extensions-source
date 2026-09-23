@@ -88,17 +88,15 @@ abstract class JuraTempest : KeiSource() {
         return MangasPage(mangas, matchedSlugs.size > page * SEARCH_PAGE_SIZE)
     }
 
-    private fun normalizeForSearch(text: String): String {
-        return text.lowercase()
-            .replace("ç", "c")
-            .replace("ş", "s")
-            .replace("ğ", "g")
-            .replace("ü", "u")
-            .replace("ö", "o")
-            .replace("ı", "i")
-            .replace("i̇", "i")
-            .replace(Regex("[^a-z0-9]+"), "")
-    }
+    private fun normalizeForSearch(text: String): String = text.lowercase()
+        .replace("ç", "c")
+        .replace("ş", "s")
+        .replace("ğ", "g")
+        .replace("ü", "u")
+        .replace("ö", "o")
+        .replace("ı", "i")
+        .replace("i̇", "i")
+        .replace(Regex("[^a-z0-9]+"), "")
 
     override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
         val segments = url.pathSegments
