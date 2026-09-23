@@ -123,14 +123,12 @@ abstract class JuraTempest : KeiSource() {
     // The chapter list rendered in the DOM is paginated client-side (10 rows per page)
     // with no addressable URL, so the full list is instead read from the React hydration
     // payload TanStack Start embeds in a <script> tag - when present, it always contains
-    // every chapter. That payload was reliably missing from plain OkHttp requests
-    // regardless of headers (User-Agent included), even though the rest of the page parses
-    // fine either way - most likely something server-side keying off the TLS connection
-    // itself (JA3/JA4 fingerprinting) rather than anything visible at the HTTP layer, which
-    // no header can fix. Loading the page through a real WebView sidesteps that entirely,
-    // since it goes through the device's actual Chromium engine. The DOM-based fallback
-    // (last 10 chapters) is kept regardless, in case a particular device/network still
-    // doesn't get the payload even through the WebView.
+    // every chapter. That payload is reliably missing when fetched through plain OkHttp
+    // (regardless of headers) AND through a bare WebView - it only starts showing up once
+    // the WebView's User-Agent/Client-Hints are explicitly pinned to a real Chrome build
+    // (see fetchHtmlViaWebView), suggesting the site keys off `Sec-CH-UA` revealing "Android
+    // WebView" rather than anything at the network/TLS level. The DOM-based fallback (last
+    // 10 chapters) is kept regardless, in case that ever stops being sufficient.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
@@ -178,6 +176,10 @@ abstract class JuraTempest : KeiSource() {
 
     private suspend fun fetchHtmlViaWebView(url: String): String = runWebView(timeout = 20.seconds) {
         blockImages = true
+        // Pinning this also patches the Sec-CH-UA client hints to match (see
+        // WebViewScope.userAgent) - the untouched default otherwise still identifies as
+        // "Android WebView" rather than "Google Chrome", which the site may be keying off.
+        userAgent = WEBVIEW_USER_AGENT
         onPageFinished {
             evaluateJs("document.documentElement.outerHTML") { result ->
                 resolve(result.parseAs<String>())
@@ -208,6 +210,9 @@ abstract class JuraTempest : KeiSource() {
 
     companion object {
         private const val SEARCH_PAGE_SIZE = 20
+
+        private const val WEBVIEW_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36"
 
         // Matches a manga entry in sitemap.xml, e.g.:
         // <loc>https://juratempe.st/explore/haimiya-senpai-dehset-derecede-sevimli</loc>
