@@ -10,12 +10,22 @@ import keiyoushi.annotation.Source
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
 import keiyoushi.utils.asJsoup
+import okhttp3.Headers
 import okhttp3.HttpUrl
 import org.jsoup.Jsoup
 import java.time.Instant
 
 @Source
 abstract class JuraTempest : KeiSource() {
+
+    // The site appears to omit the React hydration payload (see fetchMangaUpdate) for
+    // requests that don't look like a real browser. A generic OkHttp User-Agent was
+    // observed getting a version of the page missing that payload, while a real Chrome
+    // User-Agent (captured from a browser dev tools session) reliably includes it.
+    override fun Headers.Builder.configureHeaders(): Headers.Builder = set(
+        "User-Agent",
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",
+    )
 
     // Popular
     // No dedicated catalog page exists yet (`/explore` is under construction), so the
@@ -120,10 +130,9 @@ abstract class JuraTempest : KeiSource() {
     // The chapter list rendered in the DOM is paginated client-side (10 rows per page)
     // with no addressable URL, so the full list is instead read from the React hydration
     // payload TanStack Start embeds in a <script> tag - when present, it always contains
-    // every chapter. That payload isn't reliably present on every request (observed
-    // missing on-device while present when fetched from a browser, likely served
-    // conditionally), so this falls back to the paginated DOM rows (last 10 chapters)
-    // whenever the hydration payload can't be found, rather than reporting no chapters.
+    // every chapter. That payload wasn't reliably present with a generic User-Agent (see
+    // configureHeaders above), so this still falls back to the paginated DOM rows (last 10
+    // chapters) if the hydration payload is ever missing, rather than reporting no chapters.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
