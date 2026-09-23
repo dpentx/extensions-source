@@ -61,10 +61,44 @@ abstract class JuraTempest : KeiSource() {
     }
 
     // Search
-    // The site's search box calls an internal API this extension doesn't reverse-engineer
-    // yet, and the browse/catalog page is still under construction, so plain-text search
-    // isn't available for now.
-    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage = MangasPage(emptyList(), false)
+    // The site's own search box calls an internal API this extension doesn't
+    // reverse-engineer, and the browse/catalog page (`/explore`) is still under
+    // construction. But `sitemap.xml` lists every manga's URL (slug), so search works by
+    // fuzzy-matching the query against those slugs, then fetching real titles/covers only
+    // for the matches - a handful of requests instead of scraping a full catalog page.
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        if (query.isBlank()) return MangasPage(emptyList(), false)
+
+        val sitemapXml = client.get("$baseUrl/sitemap.xml").body.string()
+        val slugs = sitemapEntryRegex.findAll(sitemapXml).map { it.groupValues[1] }.distinct().toList()
+
+        val normalizedQuery = normalizeForSearch(query)
+        val matchedSlugs = slugs.filter { normalizeForSearch(it).contains(normalizedQuery) }
+
+        val pageSlugs = matchedSlugs.drop((page - 1) * SEARCH_PAGE_SIZE).take(SEARCH_PAGE_SIZE)
+        val mangas = pageSlugs.map { slug ->
+            val document = client.get("$baseUrl/explore/$slug").asJsoup()
+            SManga.create().apply {
+                url = "/explore/$slug"
+                title = document.selectFirst("h1")?.text() ?: slug
+                thumbnail_url = document.selectFirst("div[data-slot=manga-detail-hero-cover] img")?.absUrl("src")
+            }
+        }
+
+        return MangasPage(mangas, matchedSlugs.size > page * SEARCH_PAGE_SIZE)
+    }
+
+    private fun normalizeForSearch(text: String): String {
+        return text.lowercase()
+            .replace("ç", "c")
+            .replace("ş", "s")
+            .replace("ğ", "g")
+            .replace("ü", "u")
+            .replace("ö", "o")
+            .replace("ı", "i")
+            .replace("i̇", "i")
+            .replace(Regex("[^a-z0-9]+"), "")
+    }
 
     override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
         val segments = url.pathSegments
@@ -158,6 +192,12 @@ abstract class JuraTempest : KeiSource() {
     }
 
     companion object {
+        private const val SEARCH_PAGE_SIZE = 20
+
+        // Matches a manga entry in sitemap.xml, e.g.:
+        // <loc>https://juratempe.st/explore/haimiya-senpai-dehset-derecede-sevimli</loc>
+        private val sitemapEntryRegex = Regex("""<loc>[^<]*/explore/([a-z0-9-]+)</loc>""")
+
         // Matches one chapter record from the embedded hydration payload, e.g.:
         // slug:"38-5",number:38.5,title:"Bölüm 38.5",isSpecial:!0,createdAt:$R[91]=new Date("2026-08-19T15:11:32.402Z")
         // The "$R[91]=" part is a minifier-assigned registry reference whose name/index
