@@ -202,7 +202,11 @@ abstract class JuraTempest : KeiSource() {
         val discovered = mutableMapOf<Int, SChapter>()
 
         suspend fun probe(n: Int): Boolean {
-            val response = try { client.get("$baseUrl$mangaUrl/$n") } catch (e: Exception) { return false }
+            val response = try {
+                client.get("$baseUrl$mangaUrl/$n")
+            } catch (e: Exception) {
+                return false
+            }
             val ok = response.isSuccessful
             if (ok) {
                 runCatching { response.body.string() }.getOrNull()?.let { body ->
