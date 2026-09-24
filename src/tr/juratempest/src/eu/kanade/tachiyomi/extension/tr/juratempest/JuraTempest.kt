@@ -123,9 +123,9 @@ abstract class JuraTempest : KeiSource() {
     // bot protection, so plain requests, headers, and even a real WebView all get the same
     // 10-row page. Rather than chase that further, the missing chapters are instead
     // confirmed to exist by requesting them directly: probing backward every 10 chapters
-    // from the lowest visible one down to chapter 1, and only filling in the whole gap once
-    // that probe reaches chapter 1 successfully. This also handles series translated
-    // starting mid-run (e.g. chapter 1 genuinely 404s) without inventing dead links.
+    // from the lowest visible one, narrowing in on the exact starting chapter with a binary
+    // search once a gap is found, so series translated starting mid-run (chapter 1 genuinely
+    // 404s) still get everything down to their real first chapter instead of nothing.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
@@ -174,8 +174,10 @@ abstract class JuraTempest : KeiSource() {
     }
 
     // Confirms whether chapters below [visibleChapters] actually exist by requesting them
-    // directly, rather than guessing. Only fills the gap if the probe makes it all the way
-    // down to chapter 1 successfully; stops (and fills nothing) at the first missing one.
+    // directly, rather than guessing. First sweeps backward every 10 chapters until a probe
+    // fails (or chapter 1 is reached), then binary-searches the last 10-chapter window to
+    // pin down the exact starting chapter, so partial translations (starting well after
+    // chapter 1) still get everything down to their real first chapter.
     private suspend fun fillMissingChapters(mangaUrl: String, visibleChapters: List<SChapter>): List<SChapter> {
         val lowestWhole = visibleChapters
             .map { it.chapter_number }
@@ -186,20 +188,33 @@ abstract class JuraTempest : KeiSource() {
 
         if (lowestWhole <= 1) return emptyList()
 
+        var lastGood = lowestWhole
         var probe = lowestWhole - 1
-        var reachedOne = false
+        var failedAt: Int? = null
         while (probe >= 1) {
-            if (!chapterExists("$baseUrl$mangaUrl/$probe")) break
-            if (probe == 1) {
-                reachedOne = true
+            if (chapterExists("$baseUrl$mangaUrl/$probe")) {
+                lastGood = probe
+                if (probe == 1) break
+                probe = maxOf(1, probe - 10)
+            } else {
+                failedAt = probe
                 break
             }
-            probe = maxOf(1, probe - 10)
         }
 
-        if (!reachedOne) return emptyList()
+        val lowerBound = failedAt?.let { badChapter ->
+            var lo = badChapter + 1
+            var hi = lastGood
+            while (lo < hi) {
+                val mid = (lo + hi) / 2
+                if (chapterExists("$baseUrl$mangaUrl/$mid")) hi = mid else lo = mid + 1
+            }
+            lo
+        } ?: 1
 
-        return ((lowestWhole - 1) downTo 1).map { n ->
+        if (lowerBound >= lowestWhole) return emptyList()
+
+        return ((lowestWhole - 1) downTo lowerBound).map { n ->
             SChapter.create().apply {
                 url = "$mangaUrl/$n"
                 name = "Bölüm $n"
