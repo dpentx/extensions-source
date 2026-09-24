@@ -10,13 +10,9 @@ import keiyoushi.annotation.Source
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
 import keiyoushi.utils.asJsoup
-import keiyoushi.utils.parseAs
-import keiyoushi.utils.runWebView
 import okhttp3.HttpUrl
 import org.jsoup.Jsoup
 import java.time.Instant
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 @Source
 abstract class JuraTempest : KeiSource() {
@@ -121,25 +117,22 @@ abstract class JuraTempest : KeiSource() {
     // Details & Chapters
     // Both live on the same manga page, so they're always fetched and parsed together.
     //
-    // The chapter list rendered in the DOM is paginated client-side (10 rows per page)
-    // with no addressable URL, so the full list is instead read from the React hydration
-    // payload TanStack Start embeds in inline <script> tags - when present, it always
-    // contains every chapter. Those scripts self-delete once executed (they end with
-    // `document.currentScript.remove()`), so by the time a normal page load reaches
-    // onPageFinished, the data can already be gone from the DOM. Turning JavaScript off
-    // entirely isn't an option either: on at least some WebView builds that also disables
-    // evaluateJavascript itself, making it impossible to read anything back out. Instead,
-    // the DOM is polled from very early in the load, racing to catch the payload before it
-    // deletes itself; onPageFinished is kept only as a last-resort read. The DOM-based
-    // fallback (last 10 chapters) is kept regardless, in case the payload is ever genuinely
-    // absent or the race is lost.
+    // The chapter list rendered in the DOM is paginated client-side (10 rows per page) with
+    // no addressable URL. A React hydration payload embedded in the page normally carries
+    // the full list, but it's unreliable in practice - the site doesn't appear to have any
+    // bot protection, so plain requests, headers, and even a real WebView all get the same
+    // 10-row page. Rather than chase that further, the missing chapters are instead
+    // confirmed to exist by requesting them directly: probing backward every 10 chapters
+    // from the lowest visible one down to chapter 1, and only filling in the whole gap once
+    // that probe reaches chapter 1 successfully. This also handles series translated
+    // starting mid-run (e.g. chapter 1 genuinely 404s) without inventing dead links.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
         fetchDetails: Boolean,
         fetchChapters: Boolean,
     ): SMangaUpdate {
-        val html = fetchHtmlViaWebView(baseUrl + manga.url)
+        val html = client.get(baseUrl + manga.url).body.string()
         val document = Jsoup.parse(html, baseUrl + manga.url)
 
         val updatedManga = SManga.create().apply {
@@ -167,37 +160,61 @@ abstract class JuraTempest : KeiSource() {
         }.toList()
 
         val chapterList = hydratedChapters.ifEmpty {
-            document.select("a[data-slot=chapter-row]").map { element ->
+            val visibleChapters = document.select("a[data-slot=chapter-row]").map { element ->
                 SChapter.create().apply {
                     setUrlWithoutDomain(element.absUrl("href"))
                     name = element.selectFirst("span.truncate.font-medium")!!.text()
+                    chapter_number = element.selectFirst("div.size-10")?.text()?.trim()?.toFloatOrNull() ?: -1f
                 }
             }
+            visibleChapters + fillMissingChapters(manga.url, visibleChapters)
         }
 
         return SMangaUpdate(updatedManga, chapterList)
     }
 
-    private suspend fun fetchHtmlViaWebView(url: String): String = runWebView(timeout = 20.seconds) {
-        blockImages = true
-        userAgent = WEBVIEW_USER_AGENT
+    // Confirms whether chapters below [visibleChapters] actually exist by requesting them
+    // directly, rather than guessing. Only fills the gap if the probe makes it all the way
+    // down to chapter 1 successfully; stops (and fills nothing) at the first missing one.
+    private suspend fun fillMissingChapters(mangaUrl: String, visibleChapters: List<SChapter>): List<SChapter> {
+        val lowestWhole = visibleChapters
+            .map { it.chapter_number }
+            .filter { it > 0 && it == it.toInt().toFloat() }
+            .minOrNull()
+            ?.toInt()
+            ?: return emptyList()
 
-        fun captureIfHydrated() {
-            evaluateJs("document.documentElement.outerHTML") { result ->
-                val html = runCatching { result.parseAs<String>() }.getOrNull() ?: return@evaluateJs
-                if (html.contains("isSpecial")) resolve(html)
+        if (lowestWhole <= 1) return emptyList()
+
+        var probe = lowestWhole - 1
+        var reachedOne = false
+        while (probe >= 1) {
+            if (!chapterExists("$baseUrl$mangaUrl/$probe")) break
+            if (probe == 1) {
+                reachedOne = true
+                break
             }
+            probe = maxOf(1, probe - 10)
         }
 
-        poll(interval = 100.milliseconds) { captureIfHydrated() }
-        onPageFinished {
-            // Last-resort read once the page is fully done loading, in case the payload
-            // never showed up (or already deleted itself) during the polling above.
-            evaluateJs("document.documentElement.outerHTML") { result ->
-                resolve(result.parseAs<String>())
+        if (!reachedOne) return emptyList()
+
+        return (lowestWhole - 1) downTo 1 step 1 map@{ n ->
+            SChapter.create().apply {
+                url = "$mangaUrl/$n"
+                name = "Bölüm $n"
+                chapter_number = n.toFloat()
             }
         }
-        loadUrl(url)
+    }
+
+    private suspend fun chapterExists(url: String): Boolean = try {
+        val response = client.get(url)
+        val ok = response.isSuccessful
+        response.close()
+        ok
+    } catch (e: Exception) {
+        false
     }
 
     private fun parseStatus(status: String): Int {
@@ -223,9 +240,6 @@ abstract class JuraTempest : KeiSource() {
     companion object {
         private const val SEARCH_PAGE_SIZE = 20
 
-        private const val WEBVIEW_USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36"
-
         // Matches a manga entry in sitemap.xml, e.g.:
         // <loc>https://juratempe.st/explore/haimiya-senpai-dehset-derecede-sevimli</loc>
         private val sitemapEntryRegex = Regex("""<loc>[^<]*/explore/([a-z0-9-]+)</loc>""")
@@ -234,6 +248,8 @@ abstract class JuraTempest : KeiSource() {
         // slug:"38-5",number:38.5,title:"Bölüm 38.5",isSpecial:!0,createdAt:$R[91]=new Date("2026-08-19T15:11:32.402Z")
         // The "$R[91]=" part is a minifier-assigned registry reference whose name/index
         // can change between site deploys, so it's matched loosely rather than pinned.
+        // Kept as an opportunistic bonus even though it's never actually matched anything
+        // on-device so far - harmless if the payload ever does show up.
         private val chapterEntryRegex = Regex(
             """slug:"([^"]+)",number:([0-9.]+),title:"((?:[^"\\]|\\.)*)",isSpecial:(!0|!1),createdAt:(?:${'$'}\w+\[\d+]=)?new Date\("([^"]+)"\)""",
         )
