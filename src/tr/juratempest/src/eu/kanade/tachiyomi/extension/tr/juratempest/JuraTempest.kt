@@ -199,7 +199,7 @@ abstract class JuraTempest : KeiSource() {
 
         if (!reachedOne) return emptyList()
 
-        return (lowestWhole - 1) downTo 1 step 1 map@{ n ->
+        return ((lowestWhole - 1) downTo 1).map { n ->
             SChapter.create().apply {
                 url = "$mangaUrl/$n"
                 name = "Bölüm $n"
