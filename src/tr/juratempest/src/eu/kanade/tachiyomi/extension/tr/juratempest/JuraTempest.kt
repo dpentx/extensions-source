@@ -15,6 +15,7 @@ import keiyoushi.utils.runWebView
 import okhttp3.HttpUrl
 import org.jsoup.Jsoup
 import java.time.Instant
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 @Source
@@ -124,12 +125,14 @@ abstract class JuraTempest : KeiSource() {
     // with no addressable URL, so the full list is instead read from the React hydration
     // payload TanStack Start embeds in inline <script> tags - when present, it always
     // contains every chapter. Those scripts self-delete once executed (they end with
-    // `document.currentScript.remove()`), so reading the DOM *after* a normal page load
-    // (once JS has run) finds the data already gone - that's what a plain WebView load was
-    // hitting, not any kind of bot detection. Disabling JavaScript for this load means the
-    // scripts never execute (and never delete themselves), while still fetching through the
-    // WebView's real network stack. The DOM-based fallback (last 10 chapters) is kept
-    // regardless, in case the payload is ever genuinely absent.
+    // `document.currentScript.remove()`), so by the time a normal page load reaches
+    // onPageFinished, the data can already be gone from the DOM. Turning JavaScript off
+    // entirely isn't an option either: on at least some WebView builds that also disables
+    // evaluateJavascript itself, making it impossible to read anything back out. Instead,
+    // the DOM is polled from very early in the load, racing to catch the payload before it
+    // deletes itself; onPageFinished is kept only as a last-resort read. The DOM-based
+    // fallback (last 10 chapters) is kept regardless, in case the payload is ever genuinely
+    // absent or the race is lost.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
@@ -176,13 +179,20 @@ abstract class JuraTempest : KeiSource() {
     }
 
     private suspend fun fetchHtmlViaWebView(url: String): String = runWebView(timeout = 20.seconds) {
-        // Deliberately NOT enabling JavaScript: the hydration payload we need lives in
-        // inline <script> tags that delete themselves right after executing, so leaving
-        // JS off is what keeps the data readable in the DOM at all (see comment above).
-        javaScriptEnabled = false
         blockImages = true
         userAgent = WEBVIEW_USER_AGENT
+
+        fun captureIfHydrated() {
+            evaluateJs("document.documentElement.outerHTML") { result ->
+                val html = runCatching { result.parseAs<String>() }.getOrNull() ?: return@evaluateJs
+                if (html.contains("isSpecial")) resolve(html)
+            }
+        }
+
+        poll(interval = 100.milliseconds) { captureIfHydrated() }
         onPageFinished {
+            // Last-resort read once the page is fully done loading, in case the payload
+            // never showed up (or already deleted itself) during the polling above.
             evaluateJs("document.documentElement.outerHTML") { result ->
                 resolve(result.parseAs<String>())
             }
