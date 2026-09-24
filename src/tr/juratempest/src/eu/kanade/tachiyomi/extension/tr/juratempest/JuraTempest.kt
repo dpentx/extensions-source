@@ -10,9 +10,13 @@ import keiyoushi.annotation.Source
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
 import keiyoushi.utils.asJsoup
+import keiyoushi.utils.tryParseDate
 import okhttp3.HttpUrl
 import org.jsoup.Jsoup
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @Source
 abstract class JuraTempest : KeiSource() {
@@ -148,16 +152,7 @@ abstract class JuraTempest : KeiSource() {
                 ?: SManga.UNKNOWN
         }
 
-        val hydratedChapters = chapterEntryRegex.findAll(html).map { match ->
-            val (slug, number, title, isSpecial, createdAt) = match.destructured
-            SChapter.create().apply {
-                url = "${manga.url}/$slug"
-                name = title.replace("\\\"", "\"").replace("\\\\", "\\")
-                chapter_number = number.toFloatOrNull() ?: -1f
-                date_upload = runCatching { Instant.parse(createdAt).toEpochMilli() }.getOrDefault(0L)
-                scanlator = if (isSpecial == "!0") "Özel" else null
-            }
-        }.toList()
+        val hydratedChapters = chapterEntryRegex.findAll(html).map { match -> match.toChapter(manga.url) }.toList()
 
         val chapterList = hydratedChapters.ifEmpty {
             val visibleChapters = document.select("a[data-slot=chapter-row]").map { element ->
@@ -165,6 +160,8 @@ abstract class JuraTempest : KeiSource() {
                     setUrlWithoutDomain(element.absUrl("href"))
                     name = element.selectFirst("span.truncate.font-medium")!!.text()
                     chapter_number = element.selectFirst("div.size-10")?.text()?.trim()?.toFloatOrNull() ?: -1f
+                    date_upload = element.selectFirst("span.text-muted-foreground.text-xs")?.text()
+                        ?.let { dateFormat.tryParseDate(it, istanbulZone) } ?: 0L
                 }
             }
             visibleChapters + fillMissingChapters(manga.url, visibleChapters)
@@ -173,11 +170,25 @@ abstract class JuraTempest : KeiSource() {
         return SMangaUpdate(updatedManga, chapterList)
     }
 
+    private fun MatchResult.toChapter(mangaUrl: String): SChapter {
+        val (slug, number, title, isSpecial, createdAt) = destructured
+        return SChapter.create().apply {
+            url = "$mangaUrl/$slug"
+            name = title.replace("\\\"", "\"").replace("\\\\", "\\")
+            chapter_number = number.toFloatOrNull() ?: -1f
+            date_upload = runCatching { Instant.parse(createdAt).toEpochMilli() }.getOrDefault(0L)
+            scanlator = if (isSpecial == "!0") "Özel" else null
+        }
+    }
+
     // Confirms whether chapters below [visibleChapters] actually exist by requesting them
     // directly, rather than guessing. First sweeps backward every 10 chapters until a probe
     // fails (or chapter 1 is reached), then binary-searches the last 10-chapter window to
     // pin down the exact starting chapter, so partial translations (starting well after
-    // chapter 1) still get everything down to their real first chapter.
+    // chapter 1) still get everything down to their real first chapter. Each probed chapter
+    // page is also checked for the same hydration payload (it sometimes carries the full
+    // chapter list with real titles/dates for its release picker); any real data found this
+    // way replaces the bare "Bölüm N" placeholder for that chapter.
     private suspend fun fillMissingChapters(mangaUrl: String, visibleChapters: List<SChapter>): List<SChapter> {
         val lowestWhole = visibleChapters
             .map { it.chapter_number }
@@ -188,16 +199,36 @@ abstract class JuraTempest : KeiSource() {
 
         if (lowestWhole <= 1) return emptyList()
 
+        val discovered = mutableMapOf<Int, SChapter>()
+
+        suspend fun probe(n: Int): Boolean {
+            val response = try { client.get("$baseUrl$mangaUrl/$n") } catch (e: Exception) { return false }
+            val ok = response.isSuccessful
+            if (ok) {
+                runCatching { response.body.string() }.getOrNull()?.let { body ->
+                    chapterEntryRegex.findAll(body).forEach { match ->
+                        val chapter = match.toChapter(mangaUrl)
+                        val number = chapter.chapter_number
+                        if (number > 0 && number == number.toInt().toFloat()) {
+                            discovered[number.toInt()] = chapter
+                        }
+                    }
+                }
+            }
+            response.close()
+            return ok
+        }
+
         var lastGood = lowestWhole
-        var probe = lowestWhole - 1
+        var probeNumber = lowestWhole - 1
         var failedAt: Int? = null
-        while (probe >= 1) {
-            if (chapterExists("$baseUrl$mangaUrl/$probe")) {
-                lastGood = probe
-                if (probe == 1) break
-                probe = maxOf(1, probe - 10)
+        while (probeNumber >= 1) {
+            if (probe(probeNumber)) {
+                lastGood = probeNumber
+                if (probeNumber == 1) break
+                probeNumber = maxOf(1, probeNumber - 10)
             } else {
-                failedAt = probe
+                failedAt = probeNumber
                 break
             }
         }
@@ -207,7 +238,7 @@ abstract class JuraTempest : KeiSource() {
             var hi = lastGood
             while (lo < hi) {
                 val mid = (lo + hi) / 2
-                if (chapterExists("$baseUrl$mangaUrl/$mid")) hi = mid else lo = mid + 1
+                if (probe(mid)) hi = mid else lo = mid + 1
             }
             lo
         } ?: 1
@@ -215,21 +246,12 @@ abstract class JuraTempest : KeiSource() {
         if (lowerBound >= lowestWhole) return emptyList()
 
         return ((lowestWhole - 1) downTo lowerBound).map { n ->
-            SChapter.create().apply {
+            discovered[n] ?: SChapter.create().apply {
                 url = "$mangaUrl/$n"
                 name = "Bölüm $n"
                 chapter_number = n.toFloat()
             }
         }
-    }
-
-    private suspend fun chapterExists(url: String): Boolean = try {
-        val response = client.get(url)
-        val ok = response.isSuccessful
-        response.close()
-        ok
-    } catch (e: Exception) {
-        false
     }
 
     private fun parseStatus(status: String): Int {
@@ -255,16 +277,21 @@ abstract class JuraTempest : KeiSource() {
     companion object {
         private const val SEARCH_PAGE_SIZE = 20
 
+        private val istanbulZone = ZoneId.of("Europe/Istanbul")
+        private val dateFormat = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.forLanguageTag("tr"))
+
         // Matches a manga entry in sitemap.xml, e.g.:
         // <loc>https://juratempe.st/explore/haimiya-senpai-dehset-derecede-sevimli</loc>
         private val sitemapEntryRegex = Regex("""<loc>[^<]*/explore/([a-z0-9-]+)</loc>""")
 
-        // Matches one chapter record from the embedded hydration payload, e.g.:
+        // Matches one chapter record from a React hydration payload, e.g.:
         // slug:"38-5",number:38.5,title:"Bölüm 38.5",isSpecial:!0,createdAt:$R[91]=new Date("2026-08-19T15:11:32.402Z")
         // The "$R[91]=" part is a minifier-assigned registry reference whose name/index
         // can change between site deploys, so it's matched loosely rather than pinned.
-        // Kept as an opportunistic bonus even though it's never actually matched anything
-        // on-device so far - harmless if the payload ever does show up.
+        // This payload is unreliable on the manga details page itself, but full or partial
+        // chapter lists using this exact shape also turn up on individual chapter reader
+        // pages (likely powering a "jump to chapter" picker), so the same pattern is reused
+        // there as a bonus source of real titles/dates - see fillMissingChapters.
         private val chapterEntryRegex = Regex(
             """slug:"([^"]+)",number:([0-9.]+),title:"((?:[^"\\]|\\.)*)",isSpecial:(!0|!1),createdAt:(?:${'$'}\w+\[\d+]=)?new Date\("([^"]+)"\)""",
         )
