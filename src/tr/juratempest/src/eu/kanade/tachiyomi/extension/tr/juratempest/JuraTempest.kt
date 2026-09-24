@@ -122,13 +122,14 @@ abstract class JuraTempest : KeiSource() {
     //
     // The chapter list rendered in the DOM is paginated client-side (10 rows per page)
     // with no addressable URL, so the full list is instead read from the React hydration
-    // payload TanStack Start embeds in a <script> tag - when present, it always contains
-    // every chapter. That payload is reliably missing when fetched through plain OkHttp
-    // (regardless of headers) AND through a bare WebView - it only starts showing up once
-    // the WebView's User-Agent/Client-Hints are explicitly pinned to a real Chrome build
-    // (see fetchHtmlViaWebView), suggesting the site keys off `Sec-CH-UA` revealing "Android
-    // WebView" rather than anything at the network/TLS level. The DOM-based fallback (last
-    // 10 chapters) is kept regardless, in case that ever stops being sufficient.
+    // payload TanStack Start embeds in inline <script> tags - when present, it always
+    // contains every chapter. Those scripts self-delete once executed (they end with
+    // `document.currentScript.remove()`), so reading the DOM *after* a normal page load
+    // (once JS has run) finds the data already gone - that's what a plain WebView load was
+    // hitting, not any kind of bot detection. Disabling JavaScript for this load means the
+    // scripts never execute (and never delete themselves), while still fetching through the
+    // WebView's real network stack. The DOM-based fallback (last 10 chapters) is kept
+    // regardless, in case the payload is ever genuinely absent.
     override suspend fun fetchMangaUpdate(
         manga: SManga,
         chapters: List<SChapter>,
@@ -175,10 +176,11 @@ abstract class JuraTempest : KeiSource() {
     }
 
     private suspend fun fetchHtmlViaWebView(url: String): String = runWebView(timeout = 20.seconds) {
+        // Deliberately NOT enabling JavaScript: the hydration payload we need lives in
+        // inline <script> tags that delete themselves right after executing, so leaving
+        // JS off is what keeps the data readable in the DOM at all (see comment above).
+        javaScriptEnabled = false
         blockImages = true
-        // Pinning this also patches the Sec-CH-UA client hints to match (see
-        // WebViewScope.userAgent) - the untouched default otherwise still identifies as
-        // "Android WebView" rather than "Google Chrome", which the site may be keying off.
         userAgent = WEBVIEW_USER_AGENT
         onPageFinished {
             evaluateJs("document.documentElement.outerHTML") { result ->
